@@ -39,7 +39,6 @@ class DjangoTusAppConf(AppConf):
     DESTINATION_DIR = ''
 
     def configure_destination_dir(self, value):
-
         # The setting has been configured, return it.
         if value:
             return value
@@ -50,4 +49,3 @@ class DjangoTusAppConf(AppConf):
 
         # Setting is not configured.
         return ''
-

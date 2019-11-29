@@ -15,12 +15,16 @@ from django_tus.signals import tus_upload_finished_signal
 logger = logging.getLogger(__name__)
 
 
+def default_resource_id_generator(self):
+    return str(uuid.uuid4())
+
 class TusUpload(View):
 
     tus_api_version = '1.0.0'
     tus_api_version_supported = ['1.0.0', ]
     tus_api_extensions = ['creation', 'termination', 'file-check']
     on_finish = None
+    resource_id_generator = default_resource_id_generator
 
     @method_decorator(csrf_exempt)
     def dispatch(self, *args, **kwargs):
@@ -139,17 +143,18 @@ class TusUpload(View):
             logger.error("Unable to access file", extra={'request': request.META, 'metadata': metadata})
             #response.status_code = 409
             #return response
-
+        file_name = metadata.get("filename")
         file_size = int(request.META.get("HTTP_UPLOAD_LENGTH", "0"))
-        resource_id = str(uuid.uuid4())
-
-        cache.add("tus-uploads/{}/filename".format(resource_id), "{}".format(metadata.get("filename")), settings.TUS_TIMEOUT)
+        resource_id = self.resource_id_generator(file_name, request)
+        cache.add("tus-uploads/{}/filename".format(resource_id), "{}".format(file_name), settings.TUS_TIMEOUT)
         cache.add("tus-uploads/{}/file_size".format(resource_id), file_size, settings.TUS_TIMEOUT)
         cache.add("tus-uploads/{}/offset".format(resource_id), 0, settings.TUS_TIMEOUT)
         cache.add("tus-uploads/{}/metadata".format(resource_id), metadata, settings.TUS_TIMEOUT)
 
+        file_path = os.path.join(settings.TUS_UPLOAD_DIR, resource_id)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         try:
-            f = open(os.path.join(settings.TUS_UPLOAD_DIR, resource_id), "wb")
+            f = open(file_path, "wb")
             f.seek(file_size)
             f.write(b"\0")
             f.close()
@@ -182,11 +187,9 @@ class TusUpload(View):
         return response
 
     def patch(self, request, *args, **kwargs):
-
         response = self.get_tus_response()
 
         resource_id = kwargs.get('resource_id', None)
-
 
         filename = cache.get("tus-uploads/{}/filename".format(resource_id))
         file_size = int(cache.get("tus-uploads/{}/file_size".format(resource_id)))
@@ -235,7 +238,8 @@ class TusUpload(View):
             logger.error("post_finish_check")
 
             filename = uuid.uuid4().hex + "_" + filename
-            os.rename(upload_file_path, os.path.join(settings.TUS_DESTINATION_DIR, filename))
+            destination_file_path = os.path.join(settings.TUS_DESTINATION_DIR, filename)
+            os.rename(upload_file_path, destination_file_path)
             cache.delete_many([
                 "tus-uploads/{}/file_size".format(resource_id),
                 "tus-uploads/{}/filename".format(resource_id),
@@ -245,13 +249,15 @@ class TusUpload(View):
             # sending signal
             tus_upload_finished_signal.send(
                 sender=self.__class__,
+                request=request,
+                resource_id=resource_id,
                 metadata=metadata,
                 filename=filename,
                 upload_file_path=upload_file_path,
+                destination_file_path=destination_file_path,
                 file_size=file_size,
                 upload_url=settings.TUS_UPLOAD_URL,
                 destination_folder=settings.TUS_DESTINATION_DIR)
 
             self.finished()
-
         return response
